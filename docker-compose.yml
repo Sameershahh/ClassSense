@@ -1,0 +1,80 @@
+# ============================================================
+# ClassSense — Docker Compose
+# Starts: PostgreSQL + Backend API + Next.js Frontend
+#
+# Commands:
+#   docker compose up --build       # first run
+#   docker compose up -d            # background
+#   docker compose down             # stop
+#   docker compose logs -f backend  # view logs
+# ============================================================
+
+services:
+
+  # ── PostgreSQL Database ────────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       classsense_db
+      POSTGRES_USER:     classsense_user
+      POSTGRES_PASSWORD: classsense_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U classsense_user -d classsense_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── FastAPI Backend ────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL:                  postgresql://classsense_user:classsense_pass@db:5432/classsense_db
+      SECRET_KEY:                    classsense-change-this-in-production-32chars
+      ALGORITHM:                     HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES:   "480"
+      CORS_ORIGINS:                  http://localhost:3000
+    volumes:
+      # Mount model weights so they persist outside the container
+      - ./ml/emotion/model_weights:/app/ml/emotion/model_weights:ro
+      # Reports written by the app are accessible on the host
+      - ./reports:/app/reports
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL",
+             "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ── Next.js Frontend ───────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+
+# ── Named Volumes ──────────────────────────────────────────
+volumes:
+  postgres_data:
+    driver: local

@@ -1,0 +1,45 @@
+# ============================================================
+# ClassSense — Python Dependencies
+# Python 3.10 required.
+#
+# LOCAL INSTALL (CPU-only, recommended for dev):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements.txt
+#
+# DOCKER: torch CPU is installed separately in the Dockerfile.
+# GPU:    replace the index-url with https://download.pytorch.org/whl/cu121
+# ============================================================
+
+# ── ML / Computer Vision ──────────────────────────────────────
+# torch + torchvision are intentionally omitted here.
+# Install them FIRST with the correct index-url (see above).
+# This prevents pip from accidentally pulling a 2 GB CUDA wheel.
+opencv-python-headless>=4.9.0.80    # headless = no Qt/GUI, safe on servers
+mediapipe>=0.10.0                   # 0.9.x is broken on Python 3.10+
+deep-sort-realtime>=1.3.2
+numpy>=1.26.0,<2.0.0               # <2 keeps mediapipe + deep-sort happy
+Pillow>=10.2.0
+
+# ── Backend ───────────────────────────────────────────────────
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
+python-dotenv>=1.0.1
+aiofiles>=23.2.0
+
+# ── Database ──────────────────────────────────────────────────
+sqlalchemy>=2.0.29
+psycopg2-binary>=2.9.9
+
+# ── Auth ──────────────────────────────────────────────────────
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+bcrypt==4.0.1                      # passlib 1.7.4 is incompatible with bcrypt>=4.1 (removed __about__)
+
+# ── Reports ───────────────────────────────────────────────────
+reportlab>=4.1.0
+pandas>=2.2.2
+
+# ── Validation ────────────────────────────────────────────────
+pydantic>=2.6.4
+email-validator>=2.1.1

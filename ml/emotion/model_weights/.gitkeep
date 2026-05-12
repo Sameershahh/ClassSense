@@ -1,0 +1,5 @@
+# Drop your Colab export here:
+#   classsense_BEST.pth  →  rename to  →  classsense_mobilenetv2.pth
+#
+# Then set in .env (optional override):
+#   MODEL_WEIGHTS_PATH=/absolute/path/to/classsense_mobilenetv2.pth
