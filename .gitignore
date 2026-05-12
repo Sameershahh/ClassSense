@@ -42,6 +42,13 @@ ml/emotion/model_weights/*.pth
 .vscode/
 .idea/
 
+# Portable Python
+python/
+
+# Temp
+new.txt
+*.log
+
 # App specific
 reports/
 logs/
