@@ -156,15 +156,19 @@ class ClassSensePipeline:
 
         # ── Sub-components ────────────────────────────────────
         from ml.emotion.classifier import EmotionClassifier
+        from ml.gaze.estimator import GazeEstimator
+        from ml.engagement.scorer import EngagementScorer
+
         self.classifier = EmotionClassifier(weights_path)
         self.tracker    = _TrackerWrapper(max_age=30, n_init=2)
         self._detector  = _FaceDetector(min_confidence=0.5)
+        self.gaze       = GazeEstimator()
+        self.scorer     = EngagementScorer(smoothing_window=self._smoothing_window)
 
         # ── Session state (reset per session) ─────────────────
         self._frame_id          : int                    = 0
         self._track_emotions    : Dict[int, dict]        = {}
         self._session_results   : list                   = []
-        self._engagement_history: deque                  = deque(maxlen=self._smoothing_window)
 
         logger.info(
             "ClassSensePipeline ready | model_loaded=%s | "
@@ -181,8 +185,8 @@ class ClassSensePipeline:
         self._frame_id           = 0
         self._track_emotions     = {}
         self._session_results    = []
-        self._engagement_history = deque(maxlen=self._smoothing_window)
         self.tracker.reset()
+        self.scorer.reset()
         logger.debug("Pipeline: session reset.")
 
     def get_session_summary(self) -> dict:
@@ -250,6 +254,9 @@ class ClassSensePipeline:
             logger.warning("Tracker update failed (frame %d): %s", self._frame_id, exc)
             tracks = []
 
+        # Run Gaze Estimation
+        gaze_results = self.gaze.estimate(frame)
+
         # 4. Determine which objects to analyze (Tracks for Video, Detections for Image)
         targets = []
         
@@ -281,6 +288,9 @@ class ClassSensePipeline:
 
         distribution    = {cls: 0 for cls in CLASS_NAMES}
         student_details = []
+        
+        from ml.engagement.scorer import StudentEngagement
+        student_engs = []
 
         for target in targets:
             x1, y1, x2, y2 = target["bbox"]
@@ -299,36 +309,42 @@ class ClassSensePipeline:
             label = pred["label"]
             distribution[label] = distribution.get(label, 0) + 1
 
+            # Match target box center with closest Gaze face center
+            tx = (x1 + x2) / 2.0
+            ty = (y1 + y2) / 2.0
+            best_gaze_score = 1.0  # default if no Face Mesh detection matches
+            best_dist = float("inf")
+            for gaze in gaze_results:
+                gcx, gcy = gaze["center"]
+                dist = (tx - gcx)**2 + (ty - gcy)**2
+                if dist < best_dist and dist < 20000.0:  # ~140px maximum distance
+                    best_dist = dist
+                    best_gaze_score = gaze["score"]
+
             student_details.append({
                 "track_id"  : track_id,
                 "bbox"      : [x1, y1, x2, y2],
                 "emotion"   : label,
                 "confidence": pred["confidence"],
-                "score"     : pred["score"],
+                "gaze_score": best_gaze_score,
+                "score"     : round((0.6 * best_gaze_score) + (0.4 * pred["score"]), 3),
             })
 
-        # 5. Engagement score = mean(individual scores) * 100
-        student_count = len(student_details)
-        scores = [d["score"] for d in student_details]
-        raw_pct = (sum(scores) / len(scores) * 100) if scores else 0.0
+            student_engs.append(StudentEngagement(
+                track_id=track_id,
+                emotion=label,
+                emotion_score=pred["score"],
+                gaze_score=best_gaze_score
+            ))
 
-        # Rolling smooth
-        self._engagement_history.append(raw_pct)
-        smoothed_pct = sum(self._engagement_history) / len(self._engagement_history)
-
-        # Distribution percentages
-        total = student_count or 1
-        dist_pct = {k: round(100.0 * v / total, 1) for k, v in distribution.items()}
+        # 5. Compute class engagement using custom scorer
+        class_eng = self.scorer.score_frame(student_engs)
+        class_eng_dict = class_eng.to_dict()
 
         result = {
             "frame_id": self._frame_id,
-            "engagement": {
-                "engagement_pct"  : round(smoothed_pct, 1),
-                "student_count"   : student_count,
-                "distribution"    : distribution,
-                "distribution_pct": dist_pct,
-            },
-            "tracked_count" : student_count,
+            "engagement": class_eng_dict,
+            "tracked_count" : class_eng_dict["student_count"],
             "faces"         : [d["bbox"] for d in student_details],
             "student_details": student_details,
         }

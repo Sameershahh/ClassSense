@@ -37,12 +37,16 @@ _infer_transform = T.Compose([
 
 # ── Model architecture — identical to Colab build_model() ─────────────────────
 
-def _build_model(num_classes: int = 3, dropout: float = 0.4) -> nn.Module:
+def _build_model(num_classes: int = 3, dropout: float = 0.4, architecture: str = "mobilenet_v2") -> nn.Module:
     """
     Exact replica of Colab build_model().
     weights=None because we load fine-tuned weights from the .pth checkpoint.
     """
-    model = models.mobilenet_v2(weights=None)
+    if architecture == "efficientnet_b0":
+        model = models.efficientnet_b0(weights=None)
+    else:
+        model = models.mobilenet_v2(weights=None)
+        
     in_feat = model.classifier[1].in_features
     model.classifier = nn.Sequential(
         nn.Dropout(p=dropout),
@@ -89,14 +93,15 @@ class EmotionClassifier:
             # weights_only=False required: checkpoint contains Python dicts
             ckpt = torch.load(path, map_location="cpu", weights_only=False)
 
-            num_classes = ckpt.get("num_classes", 3)
-            dropout     = ckpt.get("dropout", 0.4)
+            num_classes  = ckpt.get("num_classes", 3)
+            dropout      = ckpt.get("dropout", 0.4)
+            architecture = ckpt.get("architecture", "mobilenet_v2")
 
             # Prefer metadata baked into checkpoint over hardcoded defaults
             self._class_names  = ckpt.get("class_names",  CLASS_NAMES)
             self._class_scores = ckpt.get("class_scores", CLASS_SCORES)
 
-            model = _build_model(num_classes=num_classes, dropout=dropout)
+            model = _build_model(num_classes=num_classes, dropout=dropout, architecture=architecture)
             model.load_state_dict(ckpt["model_state_dict"])
             model.eval()
 

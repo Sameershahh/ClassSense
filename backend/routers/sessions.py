@@ -16,9 +16,12 @@ import time as time_module
 from typing import List, Optional
 
 from fastapi import (APIRouter, Depends, UploadFile, File,
-                     HTTPException, BackgroundTasks, Query, status)
+                     HTTPException, BackgroundTasks, Query, status,
+                     WebSocket, WebSocketDisconnect)
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session as DBSession
+import json
+import asyncio
 
 from backend.database import get_db
 from backend.auth import get_current_user, TokenData
@@ -447,3 +450,108 @@ def end_session(
             },
         },
     }
+
+
+# ══════════════════════════════════════════════════════════════
+# REAL-TIME & EVALUATION CHANNELS (Phase 6 / 14 Requirements)
+# ══════════════════════════════════════════════════════════════
+
+@router.post("/start", summary="Start session alias (Phase 6)")
+def start_session_alias(course: str, time_slot: str, db: DBSession = Depends(get_db)):
+    """
+    Alias starting endpoint matching the FYP implementation plan specifications exactly.
+    """
+    session = SessionModel(
+        instructor_id = 1,
+        course_name   = course,
+        time_slot     = time_slot,
+        status        = "active",
+    )
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+    ml_runner.start_session(session.id)
+    return {"session_id": session.id, "status": "started"}
+
+@router.post("/{session_id}/process-video", summary="Process video alias (Phase 6)")
+async def process_video_alias(
+    session_id: int,
+    file      : UploadFile = File(...),
+    db        : DBSession  = Depends(get_db),
+):
+    """
+    Alias processing endpoint matching the FYP implementation plan specifications exactly.
+    """
+    session = _get_session_or_404(session_id, db)
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if not ext:
+        ext = ".mp4"
+    tmp_path = os.path.join(TMP_DIR, f"session_{session_id}_alias{ext}")
+    try:
+        with open(tmp_path, "wb") as fp:
+            shutil.copyfileobj(file.file, fp)
+        
+        session.status = "processing"
+        db.commit()
+
+        # Run pipeline
+        all_results = list(ml_runner.process_video(tmp_path, session_id))
+
+        # Save analytics
+        _bulk_save_frame_analytics(session_id, all_results, db)
+
+        # Mark session active so it can be ended
+        session.status = "active"
+        db.commit()
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+    
+    return {"frames_processed": len(all_results), "session_id": session_id}
+
+@router.websocket("/{session_id}/stream")
+async def websocket_stream(
+    websocket : WebSocket,
+    session_id: int,
+    db        : DBSession = Depends(get_db),
+):
+    """
+    Real-time WebSocket connection to receive live frames, run engagement
+    scoring, persist database frame analytics, and return live feedback.
+    """
+    await websocket.accept()
+    logger.info("[WebSocket] Connection accepted for session %d", session_id)
+    
+    # Track frame count for index insertion
+    frame_counter = 0
+    try:
+        while True:
+            # Receive frame bytes
+            frame_bytes = await websocket.receive_bytes()
+            frame_counter += 1
+            
+            # Run ML pipeline in worker thread to prevent blocking event loop
+            result = await asyncio.to_thread(ml_runner.process_bytes, frame_bytes)
+            
+            # Save frame analytic row to DB
+            eng = result.get("engagement", {})
+            db_analytic = FrameAnalytic(
+                session_id    = session_id,
+                frame_number  = frame_counter,
+                engagement_pct= eng.get("engagement_pct", 0.0),
+                student_count = eng.get("student_count", 0),
+                distribution  = eng.get("distribution", {}),
+            )
+            db.add(db_analytic)
+            db.commit()
+            
+            # Return live analytics back to browser/client
+            await websocket.send_text(json.dumps(eng))
+    except WebSocketDisconnect:
+        logger.info("[WebSocket] Connection disconnected cleanly for session %d", session_id)
+    except Exception as exc:
+        logger.error("[WebSocket] Error in stream: %s", exc, exc_info=True)
+

@@ -135,6 +135,22 @@ class MLRunner:
         self._pipeline.reset_session()
         return self._pipeline.process_frame(frame, accumulate=False)
 
+    def process_bytes(self, frame_bytes: bytes) -> dict:
+        """
+        Process a live video frame from raw WebSocket bytes.
+        Accumulates history for session analytics.
+        """
+        if not self._pipeline:
+            return self._empty_result()
+
+        arr   = np.frombuffer(frame_bytes, dtype=np.uint8)
+        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if frame is None:
+            logger.warning("Could not decode frame bytes.")
+            return self._empty_result()
+
+        return self._pipeline.process_frame(frame, accumulate=True)
+
     # ── Annotated video export (FYP demo) ────────────────────
 
     def export_annotated_video(self, input_path: str, output_path: str) -> dict:
