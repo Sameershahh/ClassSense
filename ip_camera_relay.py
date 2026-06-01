@@ -144,8 +144,8 @@ async def stream_camera():
         
         print("\n" + "="*60)
         print("🎉 REPORTS READY FOR DOWNLOAD:")
-        print(f"📄 PDF Summary Report:  {BACKEND_HTTP_URL}/api/analytics/{session_id}/report/pdf")
-        print(f"📊 CSV Data Export:     {BACKEND_HTTP_URL}/api/analytics/{session_id}/report/csv")
+        print(f"📄 PDF Summary Report:  {BACKEND_HTTP_URL}/api/analytics/{session_id}/report/pdf?token={token}")
+        print(f"📊 CSV Data Export:     {BACKEND_HTTP_URL}/api/analytics/{session_id}/report/csv?token={token}")
         print("="*60 + "\n")
 
 if __name__ == "__main__":

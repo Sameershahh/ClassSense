@@ -2,7 +2,7 @@
 # JWT-based authentication.
 # Provides: login endpoint, token creation, get_current_user dependency.
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -22,7 +22,7 @@ EXPIRE_MINS = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "480"))  # 8 hours
 
 # ── Crypto ───────────────────────────────────────────────────
 pwd_context   = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token", auto_error=False)
 
 # ── Hardcoded users for MVP ───────────────────────────────────
 # Replace with a DB-backed user table in production.
@@ -72,21 +72,32 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
 
 # ── Dependency: get current authenticated user ────────────────
 
-def get_current_user(token: str = Depends(oauth2_scheme)) -> TokenData:
+def get_current_user(
+    request: Request,
+    token: Optional[str] = Depends(oauth2_scheme)
+) -> TokenData:
     """
     FastAPI dependency. Decodes the JWT and returns the token payload.
     Raises HTTP 401 if the token is invalid or expired.
-
-    Usage in any protected endpoint:
-        @router.get("/protected")
-        def protected(user: TokenData = Depends(get_current_user)):
-            ...
+    Falls back to checking the ?token= query parameter for direct browser downloads.
     """
     credentials_exc = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid or expired token",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    
+    # Fallback to query parameter if header is missing
+    if not token:
+        token = request.query_params.get("token")
+        
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+        
     try:
         payload  = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
