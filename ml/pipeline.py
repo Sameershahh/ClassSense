@@ -76,16 +76,19 @@ class _FaceDetector:
     def _init(self) -> None:
         try:
             import mediapipe as mp
-            self._mp_fd    = mp.solutions.face_detection
-            self._detector = self._mp_fd.FaceDetection(
-                model_selection=1,              # full-range model (>2m)
+            self._mp_fd    = mp.solutions.face_mesh
+            # Use FaceMesh which can detect multiple faces (default up to 8)
+            self._detector = self._mp_fd.FaceMesh(
+                max_num_faces=8,
                 min_detection_confidence=self._min_conf,
+                refine_landmarks=False,
             )
-            logger.info("FaceDetector: MediaPipe loaded.")
+            logger.info("FaceDetector: MediaPipe FaceMesh loaded (max 8 faces).")
         except Exception as exc:
             logger.warning(
                 "FaceDetector: MediaPipe unavailable (%s). "
-                "Falling back to OpenCV Haar cascade.", exc
+                "Falling back to OpenCV Haar cascade.",
+                exc
             )
             self._fallback = True
             self._detector = cv2.CascadeClassifier(
@@ -106,21 +109,26 @@ class _FaceDetector:
         return self._detect_mediapipe(frame_bgr, w, h)
 
     def _detect_mediapipe(self, frame_bgr, w, h):
-        rgb     = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         results = self._detector.process(rgb)
-        boxes   = []
-        if not results.detections:
+        boxes = []
+        if not results.multi_face_landmarks:
             return boxes
-        for det in results.detections:
-            bb = det.location_data.relative_bounding_box
-            x  = max(0, int(bb.xmin  * w))
-            y  = max(0, int(bb.ymin  * h))
-            bw = min(int(bb.width  * w), w - x)
-            bh = min(int(bb.height * h), h - y)
+        for face_landmarks in results.multi_face_landmarks:
+            # Compute tight bounding box from all landmark points
+            xs = [lm.x for lm in face_landmarks.landmark]
+            ys = [lm.y for lm in face_landmarks.landmark]
+            x_min, x_max = min(xs), max(xs)
+            y_min, y_max = min(ys), max(ys)
+            # Convert normalized coordinates to pixel values with a small margin
+            margin = 0.02
+            x = int(max(0, (x_min - margin) * w))
+            y = int(max(0, (y_min - margin) * h))
+            bw = int(min(w - x, (x_max - x_min + 2 * margin) * w))
+            bh = int(min(h - y, (y_max - y_min + 2 * margin) * h))
             if bw > 10 and bh > 10:
                 boxes.append((x, y, bw, bh))
         return boxes
-
     def _detect_haar(self, frame_bgr, w, h):
         gray  = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
         faces = self._detector.detectMultiScale(
