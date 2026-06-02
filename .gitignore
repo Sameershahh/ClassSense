@@ -36,6 +36,7 @@ ENV/
 
 # ML
 ml/emotion/model_weights/*.pth
+!ml/emotion/model_weights/classsense_mobilenetv2.pth
 !ml/emotion/model_weights/.gitkeep
 
 # IDE

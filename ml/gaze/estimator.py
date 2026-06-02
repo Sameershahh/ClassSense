@@ -46,7 +46,7 @@ class GazeEstimator:
         # 1.0 = looking forward, 0.0 = looking fully away
     """
 
-    def __init__(self, max_num_faces: int = 40):
+    def __init__(self, max_num_faces: int = 15):
         self._ready = False
         self._face_mesh = None
         self._init(max_num_faces)
@@ -82,8 +82,12 @@ class GazeEstimator:
         Returns:
             List of dicts, one per detected face:
                 {
-                    "score": float (1.0 to 0.0),
-                    "center": (cx, cy) tuple of floats
+                    "score" : float (1.0 to 0.0),
+                    "center": (cx, cy) tuple of floats,
+                    "bbox"  : (x, y, w, h) bounding box in pixel coords
+                              (derived from all 468 landmarks — reused by
+                               the pipeline as DeepSORT detections so we
+                               never need a separate face-detector call).
                 }
         """
         if not self._ready or self._face_mesh is None:
@@ -100,7 +104,7 @@ class GazeEstimator:
             return []
 
         # Camera intrinsic matrix (estimated from frame dimensions)
-        focal     = float(w)
+        focal      = float(w)
         cam_matrix = np.array([
             [focal, 0,    w / 2.0],
             [0,    focal, h / 2.0],
@@ -111,34 +115,46 @@ class GazeEstimator:
         gaze_results: List[dict] = []
 
         for face_landmarks in results.multi_face_landmarks:
-            # Extract 2D pixel positions of our 6 key landmarks
-            points_2d = []
-            for idx in LANDMARK_IDS:
-                lm = face_landmarks.landmark[idx]
-                points_2d.append([lm.x * w, lm.y * h])
-            points_2d = np.array(points_2d, dtype=np.float64)
+            # ── Bounding box from ALL 468 landmarks ──────────────
+            # This is more reliable than any separate detector and
+            # gives us multi-face boxes for free from the same pass.
+            all_x = [lm.x for lm in face_landmarks.landmark]
+            all_y = [lm.y for lm in face_landmarks.landmark]
+            margin = 0.02   # 2 % of frame as padding
+            x1 = int(max(0,     (min(all_x) - margin) * w))
+            y1 = int(max(0,     (min(all_y) - margin) * h))
+            x2 = int(min(w - 1, (max(all_x) + margin) * w))
+            y2 = int(min(h - 1, (max(all_y) + margin) * h))
+            bw = max(1, x2 - x1)
+            bh = max(1, y2 - y1)
+            bbox = (x1, y1, bw, bh)   # (x, y, w, h) for DeepSORT
 
-            # Get nose tip landmark as center
+            # ── Nose tip as face centre ───────────────────────────
             nose_lm = face_landmarks.landmark[1]
-            cx, cy = nose_lm.x * w, nose_lm.y * h
+            cx, cy  = nose_lm.x * w, nose_lm.y * h
 
-            # Solve for head rotation
+            # ── Head-pose via 6 key landmarks ────────────────────
+            points_2d = np.array(
+                [[face_landmarks.landmark[idx].x * w,
+                  face_landmarks.landmark[idx].y * h]
+                 for idx in LANDMARK_IDS],
+                dtype=np.float64,
+            )
+
             success, rot_vec, _ = cv2.solvePnP(
                 FACE_3D_MODEL, points_2d, cam_matrix, dist_coeffs,
                 flags=cv2.SOLVEPNP_ITERATIVE,
             )
             if not success:
-                gaze_results.append({"score": 0.5, "center": (cx, cy)})
+                gaze_results.append({"score": 0.5, "center": (cx, cy), "bbox": bbox})
                 continue
 
-            # Convert rotation vector → rotation matrix → Euler angles
             rot_mat, _ = cv2.Rodrigues(rot_vec)
             angles, _, _, _, _, _ = cv2.RQDecomp3x3(rot_mat)
 
             yaw   = abs(angles[1])   # left-right rotation
             pitch = abs(angles[0])   # up-down rotation
 
-            # Threshold to score:
             if yaw < 15 and pitch < 20:
                 score = 1.0   # clearly attentive
             elif yaw < 30:
@@ -148,7 +164,7 @@ class GazeEstimator:
             else:
                 score = 0.0   # looking fully away
 
-            gaze_results.append({"score": score, "center": (cx, cy)})
+            gaze_results.append({"score": score, "center": (cx, cy), "bbox": bbox})
 
         return gaze_results
 

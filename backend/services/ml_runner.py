@@ -113,7 +113,7 @@ class MLRunner:
 
         logger.info("[Session %d] Processing video: %s", session_id, video_path)
         self._pipeline.reset_session()
-        yield from self._pipeline.process_video(video_path, progress_every=60)
+        yield from self._pipeline.process_video(video_path, progress_every=30)
 
     # ── Image processing ─────────────────────────────────────
 

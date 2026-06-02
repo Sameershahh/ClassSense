@@ -38,7 +38,7 @@ class _TrackerWrapper:
     ml_runner calls self._pipeline.tracker.reset() for per-image processing.
     """
 
-    def __init__(self, max_age: int = 30, n_init: int = 2):
+    def __init__(self, max_age: int = 30, n_init: int = 1):
         self._max_age = max_age
         self._n_init  = n_init
         self._tracker = self._make()
@@ -63,7 +63,9 @@ class _TrackerWrapper:
 
 class _FaceDetector:
     """
-    MediaPipe FaceDetection wrapper.
+    MediaPipe FaceDetection wrapper — designed purely for bounding-box detection.
+    Uses mp.solutions.face_detection (NOT FaceMesh) so it does NOT conflict
+    with the GazeEstimator which runs its own FaceMesh instance separately.
     Falls back to OpenCV Haar cascade if MediaPipe is unavailable.
     """
 
@@ -76,14 +78,14 @@ class _FaceDetector:
     def _init(self) -> None:
         try:
             import mediapipe as mp
-            self._mp_fd    = mp.solutions.face_mesh
-            # Use FaceMesh which can detect multiple faces (default up to 8)
-            self._detector = self._mp_fd.FaceMesh(
-                max_num_faces=8,
+            # Use FaceDetection (not FaceMesh) — it's faster and won't conflict
+            # with the GazeEstimator's separate FaceMesh instance.
+            # model_selection=1 = full-range model (better for classroom distances).
+            self._detector = mp.solutions.face_detection.FaceDetection(
+                model_selection=1,
                 min_detection_confidence=self._min_conf,
-                refine_landmarks=False,
             )
-            logger.info("FaceDetector: MediaPipe FaceMesh loaded (max 8 faces).")
+            logger.info("FaceDetector: MediaPipe FaceDetection loaded (full-range model).")
         except Exception as exc:
             logger.warning(
                 "FaceDetector: MediaPipe unavailable (%s). "
@@ -109,26 +111,21 @@ class _FaceDetector:
         return self._detect_mediapipe(frame_bgr, w, h)
 
     def _detect_mediapipe(self, frame_bgr, w, h):
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        rgb     = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         results = self._detector.process(rgb)
-        boxes = []
-        if not results.multi_face_landmarks:
+        boxes   = []
+        if not results.detections:
             return boxes
-        for face_landmarks in results.multi_face_landmarks:
-            # Compute tight bounding box from all landmark points
-            xs = [lm.x for lm in face_landmarks.landmark]
-            ys = [lm.y for lm in face_landmarks.landmark]
-            x_min, x_max = min(xs), max(xs)
-            y_min, y_max = min(ys), max(ys)
-            # Convert normalized coordinates to pixel values with a small margin
-            margin = 0.02
-            x = int(max(0, (x_min - margin) * w))
-            y = int(max(0, (y_min - margin) * h))
-            bw = int(min(w - x, (x_max - x_min + 2 * margin) * w))
-            bh = int(min(h - y, (y_max - y_min + 2 * margin) * h))
+        for detection in results.detections:
+            bbox_mp = detection.location_data.relative_bounding_box
+            x  = int(max(0,       bbox_mp.xmin * w))
+            y  = int(max(0,       bbox_mp.ymin * h))
+            bw = int(min(w - x,   bbox_mp.width  * w))
+            bh = int(min(h - y,   bbox_mp.height * h))
             if bw > 10 and bh > 10:
                 boxes.append((x, y, bw, bh))
         return boxes
+
     def _detect_haar(self, frame_bgr, w, h):
         gray  = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
         faces = self._detector.detectMultiScale(
@@ -158,8 +155,10 @@ class ClassSensePipeline:
         weights_path      : Optional[str] = None,
         emotion_skip_every: int            = 3,
         smoothing_window  : int            = 10,
+        gaze_skip_every   : int            = 3,
     ):
         self._emotion_skip_every = max(1, emotion_skip_every)
+        self._gaze_skip_every    = max(1, gaze_skip_every)
         self._smoothing_window   = max(1, smoothing_window)
 
         # ── Sub-components ────────────────────────────────────
@@ -168,7 +167,7 @@ class ClassSensePipeline:
         from ml.engagement.scorer import EngagementScorer
 
         self.classifier = EmotionClassifier(weights_path)
-        self.tracker    = _TrackerWrapper(max_age=30, n_init=2)
+        self.tracker    = _TrackerWrapper(max_age=30, n_init=1)
         self._detector  = _FaceDetector(min_confidence=0.5)
         self.gaze       = GazeEstimator()
         self.scorer     = EngagementScorer(smoothing_window=self._smoothing_window)
@@ -176,6 +175,7 @@ class ClassSensePipeline:
         # ── Session state (reset per session) ─────────────────
         self._frame_id          : int                    = 0
         self._track_emotions    : Dict[int, dict]        = {}
+        self._cached_gaze       : list                   = []   # reused on gaze-skip frames
         self._session_results   : list                   = []
 
         logger.info(
@@ -192,6 +192,7 @@ class ClassSensePipeline:
         """Reset all per-session accumulators. Call before processing a new video."""
         self._frame_id           = 0
         self._track_emotions     = {}
+        self._cached_gaze        = []
         self._session_results    = []
         self.tracker.reset()
         self.scorer.reset()
@@ -249,11 +250,29 @@ class ClassSensePipeline:
         """
         self._frame_id += 1
 
-        # 1. Detect faces
-        face_boxes = self._detector.detect(frame)
+        # 1 + 2. Run gaze (FaceMesh) — gives bboxes AND gaze scores in one pass.
+        #        Skip every N frames for speed; reuse cached result on skipped frames.
+        run_gaze = (
+            (self._frame_id % self._gaze_skip_every == 0)
+            or (self._frame_id == 1)
+            or (not accumulate)
+        )
+        if run_gaze:
+            gaze_results = self.gaze.estimate(frame)
+            self._cached_gaze = gaze_results
+        else:
+            gaze_results = self._cached_gaze
 
-        # 2. Build detection list for DeepSORT: ([x,y,w,h], conf, class_id)
-        detections = [([x, y, w, h], 0.9, 0) for x, y, w, h in face_boxes]
+        # Build DeepSORT detections from gaze bboxes: ([x,y,w,h], conf, class_id)
+        detections = [
+            ([g["bbox"][0], g["bbox"][1], g["bbox"][2], g["bbox"][3]], 0.9, 0)
+            for g in gaze_results
+        ]
+
+        # Fallback: if FaceMesh found nothing, try the legacy detector
+        if not detections:
+            face_boxes = self._detector.detect(frame)
+            detections = [([x, y, w, h], 0.9, 0) for x, y, w, h in face_boxes]
 
         # 3. Update tracker
         try:
@@ -262,12 +281,9 @@ class ClassSensePipeline:
             logger.warning("Tracker update failed (frame %d): %s", self._frame_id, exc)
             tracks = []
 
-        # Run Gaze Estimation
-        gaze_results = self.gaze.estimate(frame)
-
         # 4. Determine which objects to analyze (Tracks for Video, Detections for Image)
         targets = []
-        
+
         if accumulate:
             # VIDEO MODE: Use tracks (handles occlusion and smoothing)
             for track in tracks:
@@ -276,13 +292,13 @@ class ClassSensePipeline:
                 ltrb = track.to_ltrb()
                 targets.append({
                     "id": track.track_id,
-                    "bbox": [max(0, int(ltrb[0])), max(0, int(ltrb[1])), 
+                    "bbox": [max(0, int(ltrb[0])), max(0, int(ltrb[1])),
                              min(frame.shape[1], int(ltrb[2])), min(frame.shape[0], int(ltrb[3]))]
                 })
         else:
-            # SINGLE IMAGE MODE: Use raw detections (tracker won't confirm in 1 frame)
-            for i, (box, conf, cls) in enumerate(detections):
-                x, y, w, h = box
+            # SINGLE IMAGE MODE: Use raw gaze bboxes (tracker won't confirm in 1 frame)
+            for i, g in enumerate(gaze_results):
+                x, y, w, h = g["bbox"]
                 targets.append({
                     "id": i + 1,
                     "bbox": [x, y, x + w, y + h]
@@ -395,8 +411,11 @@ class ClassSensePipeline:
                 frame_idx += 1
                 if progress_every > 0 and frame_idx % progress_every == 0:
                     pct = 100.0 * frame_idx / total if total > 0 else 0.0
+                    eng = result["engagement"]["engagement_pct"]
+                    stu = result["engagement"]["student_count"]
                     logger.info(
-                        "Video progress: %d/%d (%.1f%%)", frame_idx, total, pct
+                        "Progress: %d/%d (%.0f%%) | students=%d | engagement=%.1f%%",
+                        frame_idx, total, pct, stu, eng,
                     )
         finally:
             cap.release()

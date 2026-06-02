@@ -235,9 +235,14 @@ async def upload_and_process_video(
         session.status = "processing"
         db.commit()
 
-        # ── Run ML pipeline ──────────────────────────────────
-        t_start  = time_module.time()
-        all_results = list(ml_runner.process_video(tmp_path, session_id))
+        # ── Run ML pipeline (in thread — keeps event loop free so logs flush) ──
+        import asyncio
+        t_start = time_module.time()
+
+        def _run_pipeline():
+            return list(ml_runner.process_video(tmp_path, session_id))
+
+        all_results = await asyncio.to_thread(_run_pipeline)
         elapsed     = time_module.time() - t_start
 
         # ── Persist analytics ────────────────────────────────
