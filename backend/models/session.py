@@ -20,6 +20,8 @@ class Session(Base):
     instructor_id = Column(Integer, nullable=False, default=1)
     course_name   = Column(String(100), nullable=False)
     time_slot     = Column(String(80),  nullable=True)
+    course_slot_id = Column(Integer, ForeignKey("course_slots.id", ondelete="SET NULL"), nullable=True)
+    mode           = Column(String(30), default="video", nullable=False)  # live | video
     started_at    = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     ended_at      = Column(DateTime(timezone=True), nullable=True)
     status        = Column(String(20), default="active", nullable=False)

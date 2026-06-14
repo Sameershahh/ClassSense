@@ -90,6 +90,27 @@ app.add_middleware(
 
 
 # ── Global exception handler ──────────────────────────────────
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    logger.error("HTTPException on %s %s (status %d): %s",
+                 request.method, request.url.path, exc.status_code, exc.detail, exc_info=True)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+    )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    logger.error("RequestValidationError on %s %s: %s",
+                 request.method, request.url.path, exc.errors(), exc_info=True)
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors()},
+    )
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error("Unhandled exception on %s %s: %s",
@@ -104,10 +125,16 @@ async def global_exception_handler(request: Request, exc: Exception):
 from backend.auth              import router as auth_router       # noqa
 from backend.routers.sessions  import router as sessions_router   # noqa
 from backend.routers.analytics import router as analytics_router  # noqa
+from backend.routers.admin     import router as admin_router      # noqa
+from backend.routers.hod       import router as hod_router        # noqa
 
 app.include_router(auth_router,      prefix="/auth",          tags=["Authentication"])
 app.include_router(sessions_router,  prefix="/api/sessions",  tags=["Sessions"])
 app.include_router(analytics_router, prefix="/api/analytics", tags=["Analytics"])
+app.include_router(admin_router,     prefix="/api/admin",     tags=["Super Admin"])
+app.include_router(hod_router,       prefix="/api/hod",       tags=["HOD Management"])
+
+
 
 
 # ── Health check (no auth required) ──────────────────────────

@@ -24,20 +24,10 @@ EXPIRE_MINS = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "480"))  # 8 hours
 pwd_context   = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token", auto_error=False)
 
-# ── Hardcoded users for MVP ───────────────────────────────────
-# Replace with a DB-backed user table in production.
-USERS_DB: dict = {
-    "instructor@classsense.com": {
-        "hashed_password": pwd_context.hash("instructor123"),
-        "role": "instructor",
-        "full_name": "ClassSense Instructor",
-    },
-    "admin@classsense.com": {
-        "hashed_password": pwd_context.hash("admin123"),
-        "role": "admin",
-        "full_name": "ClassSense Admin",
-    },
-}
+# ── Database Imports ──────────────────────────────────────────
+from sqlalchemy.orm import Session
+from backend.database import get_db
+from backend.models.user import User
 
 router = APIRouter()
 
@@ -48,17 +38,18 @@ def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
 
 
-def get_user(username: str) -> Optional[dict]:
-    return USERS_DB.get(username)
+def get_user(username: str, db: Session) -> Optional[User]:
+    return db.query(User).filter(User.email == username).first()
 
 
-def authenticate_user(username: str, password: str) -> Optional[dict]:
-    user = get_user(username)
+def authenticate_user(username: str, password: str, db: Session) -> Optional[User]:
+    user = get_user(username, db)
     if not user:
         return None
-    if not verify_password(password, user["hashed_password"]):
+    if not verify_password(password, user.hashed_password):
         return None
     return user
+
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
@@ -119,10 +110,20 @@ def require_admin(user: TokenData = Depends(get_current_user)) -> TokenData:
     return user
 
 
+def require_hod(user: TokenData = Depends(get_current_user)) -> TokenData:
+    """Dependency that only allows HOD-role users."""
+    if user.role != "hod":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="HOD access required",
+        )
+    return user
+
+
 # ── Login endpoint ────────────────────────────────────────────
 
 @router.post("/token", response_model=Token, summary="Login and get JWT token")
-def login(form: OAuth2PasswordRequestForm = Depends()):
+def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     """
     Standard OAuth2 password flow.
     Returns a Bearer JWT valid for 8 hours (one teaching day).
@@ -131,7 +132,7 @@ def login(form: OAuth2PasswordRequestForm = Depends()):
     - instructor@classsense.com / instructor123
     - admin@classsense.com / admin123
     """
-    user = authenticate_user(form.username, form.password)
+    user = authenticate_user(form.username, form.password, db)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -139,18 +140,19 @@ def login(form: OAuth2PasswordRequestForm = Depends()):
             headers={"WWW-Authenticate": "Bearer"},
         )
     token = create_access_token(
-        data={"sub": form.username, "role": user["role"]},
+        data={"sub": form.username, "role": user.role},
         expires_delta=timedelta(minutes=EXPIRE_MINS),
     )
     return Token(access_token=token, token_type="bearer")
 
 
 @router.get("/me", summary="Get current user info")
-def get_me(user: TokenData = Depends(get_current_user)):
+def get_me(user: TokenData = Depends(get_current_user), db: Session = Depends(get_db)):
     """Returns info about the currently authenticated user."""
-    db_user = get_user(user.username)
+    db_user = get_user(user.username, db)
     return {
         "username" : user.username,
         "role"     : user.role,
-        "full_name": db_user.get("full_name") if db_user else None,
+        "full_name": db_user.full_name if db_user else None,
     }
+

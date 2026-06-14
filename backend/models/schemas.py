@@ -24,18 +24,9 @@ class TokenData(BaseModel):
 # ══════════════════════════════════════════════════════════════
 
 class SessionCreate(BaseModel):
-    course_name  : str = Field(..., min_length=1, max_length=100,
-                               example="CS101 — Data Structures")
-    time_slot    : str = Field(default="", max_length=80,
-                               example="Monday 10:00 AM – 11:30 AM")
-    instructor_id: int = Field(default=1)
-
-    @field_validator("course_name")
-    @classmethod
-    def course_not_blank(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("course_name must not be blank")
-        return v.strip()
+    course_slot_id: int
+    mode         : str = "video"  # live | video
+    instructor_id: Optional[int] = 1
 
 
 class SessionResponse(BaseModel):
@@ -45,6 +36,10 @@ class SessionResponse(BaseModel):
     status      : str
     started_at  : Optional[datetime]
     ended_at    : Optional[datetime] = None
+    semester_sessions_count: Optional[int] = None
+    start_date_time: Optional[str] = None
+    end_date_time: Optional[str] = None
+    mode: Optional[str] = "video"
 
     model_config = {"from_attributes": True}
 
@@ -56,6 +51,8 @@ class SessionListItem(BaseModel):
     status      : str
     started_at  : Optional[datetime]
     ended_at    : Optional[datetime]
+    start_date_time: Optional[str] = None
+    end_date_time: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -102,6 +99,7 @@ class EngagementPoint(BaseModel):
     attentive     : int
     confused      : int
     distracted    : int
+    time_str      : Optional[str] = None
 
 
 class AnalyticsTimeSeries(BaseModel):
@@ -123,8 +121,10 @@ class SessionSummaryResponse(BaseModel):
     total_attentive : int
     total_confused  : int
     total_distracted: int
+    emotion_totals  : Optional[Dict[str, int]] = None
     pdf_report_path : Optional[str]
     csv_report_path : Optional[str]
+    semester_sessions_count: Optional[int] = None
 
     model_config = {"from_attributes": True}
 
@@ -150,3 +150,40 @@ class ModelStatusResponse(BaseModel):
     model_loaded : bool
     message      : str
     weights_path : Optional[str] = None
+
+
+# ══════════════════════════════════════════════════════════════
+# Semester Analytics schemas
+# ══════════════════════════════════════════════════════════════
+
+class SemesterStatusResponse(BaseModel):
+    unlocked     : bool
+    session_count: int
+    required     : int = 14
+    course_name  : str
+    time_slot    : str
+
+
+class SemesterSessionItem(BaseModel):
+    session_id     : int
+    started_at     : datetime
+    avg_engagement : float
+    peak_engagement: float
+    min_engagement : float
+    avg_students   : float
+    duration_mins  : float
+
+
+class SemesterReportResponse(BaseModel):
+    course_name           : str
+    time_slot             : str
+    session_count         : int
+    overall_avg_engagement: float
+    peak_engagement       : float
+    min_engagement        : float
+    avg_students          : float
+    total_duration_mins   : float
+    total_attentive       : int
+    total_confused        : int
+    total_distracted      : int
+    sessions              : List[SemesterSessionItem]
