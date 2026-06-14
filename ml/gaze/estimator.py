@@ -49,6 +49,7 @@ class GazeEstimator:
     def __init__(self, max_num_faces: int = 15):
         self._ready = False
         self._face_mesh = None
+        self._max_num_faces = max_num_faces
         self._init(max_num_faces)
 
     def _init(self, max_num_faces: int) -> None:
@@ -67,6 +68,16 @@ class GazeEstimator:
                 "GazeEstimator: could not load Face Mesh — %s. "
                 "Gaze scores will default to 1.0 (neutral forward).", exc
             )
+
+    def reset(self) -> None:
+        """Reset Face Mesh graph state to prevent timestamp conflicts across sessions."""
+        if self._ready and self._face_mesh is not None:
+            try:
+                self._face_mesh.close()
+            except Exception:
+                pass
+        self._face_mesh = None
+        self._init(self._max_num_faces)
 
     @property
     def is_ready(self) -> bool:

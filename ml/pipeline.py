@@ -97,6 +97,16 @@ class _FaceDetector:
                 cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
             )
 
+    def reset(self) -> None:
+        """Reset internal MediaPipe detector state to prevent timestamp conflicts."""
+        if not self._fallback and self._detector is not None:
+            try:
+                self._detector.close()
+            except Exception:
+                pass
+        self._detector = None
+        self._init()
+
     def detect(self, frame_bgr: np.ndarray) -> List[tuple]:
         """
         Returns list of (x, y, w, h) face bounding boxes.
@@ -196,6 +206,8 @@ class ClassSensePipeline:
         self._session_results    = []
         self.tracker.reset()
         self.scorer.reset()
+        self._detector.reset()
+        self.gaze.reset()
         logger.debug("Pipeline: session reset.")
 
     def get_session_summary(self) -> dict:
@@ -391,8 +403,9 @@ class ClassSensePipeline:
         """
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
-            logger.error("Cannot open video: %s", video_path)
-            return
+            msg = f"OpenCV VideoCapture: Failed to open video file at: {video_path}"
+            logger.error(msg)
+            raise ValueError(msg)
 
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         fps   = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -405,7 +418,15 @@ class ClassSensePipeline:
                 if not ret:
                     break
 
-                result = self.process_frame(frame, accumulate=True)
+                try:
+                    result = self.process_frame(frame, accumulate=True)
+                except Exception as frame_exc:
+                    logger.error(
+                        "Error processing frame %d in video %s: %s",
+                        frame_idx, video_path, frame_exc, exc_info=True
+                    )
+                    raise RuntimeError(f"Error processing frame {frame_idx}: {frame_exc}") from frame_exc
+                
                 yield result
 
                 frame_idx += 1
@@ -417,6 +438,9 @@ class ClassSensePipeline:
                         "Progress: %d/%d (%.0f%%) | students=%d | engagement=%.1f%%",
                         frame_idx, total, pct, stu, eng,
                     )
+        except Exception as e:
+            logger.error("Exception in video processing loop for file %s: %s", video_path, e, exc_info=True)
+            raise
         finally:
             cap.release()
             logger.info("Video processing complete: %d frames", frame_idx)
